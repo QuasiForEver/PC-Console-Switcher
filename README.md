@@ -1,5 +1,7 @@
 ==============PC-Console Switcher==============
 
+![Banner](C:\Users\Julian\Desktop\PC-Console-Switch\Images\OIG1.jpg)
+
 A lightweight, automated utility to seamlessly switch your Windows environment between "Desktop PC Mode" (multiple monitors) and "Console Mode" (TV with Big Picture).
 
 ==============Features==============
@@ -22,9 +24,13 @@ Connect all hardware: Ensure your TV and all PC monitors are plugged in and reco
 
 Configure in App: Open the PC-Console Switcher, navigate to the Profiles & Audio tab, and select your TV display and audio devices from the dropdown menus.
 
+![Image1](C:\Users\Julian\Desktop\PC-Console-Switch\Images\Screenshot_3.jpg)
+
 Save: Click "Save Settings".
 
 The "Ideal Scenario" Setup: Once configured, navigate to Windows Settings > System > Display. Select your TV and choose "Disconnect this display".
+
+![Image2](C:\Users\Julian\Desktop\PC-Console-Switch\Images\Screenshot_4.jpg)
 
 Why? By doing this, Windows saves this state in the registry. When the app sends the /extend command, Windows will remember to keep the TV disconnected while your PC monitors are active, preventing the PC from sending a signal to a display that isn't in use.
 
@@ -37,12 +43,16 @@ Click "Switch Console/PC Mode" and hold the button combination you want to use (
 
 Repeat for the "Switch to Headphones" shortcut.
 
+![Image3](C:\Users\Julian\Desktop\PC-Console-Switch\Images\Screenshot_1.jpg)
+
 Click "Save Settings".
 
 3. Running in Background
 The application starts and minimizes to the System Tray (near the Windows clock).
 
 To restore the interface, right-click the icon in the tray and select "Show Interface".
+
+![Image4](C:\Users\Julian\Desktop\PC-Console-Switch\Images\Screenshot_2.jpg)
 
 To exit, select "Exit" from the tray menu.
 
