@@ -14,6 +14,13 @@ import subprocess
 import pystray
 from PIL import Image
 
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 # --- LOGGER CONFIGURATION ---
 logging.basicConfig(
     filename='app_debug.log', 
@@ -193,10 +200,11 @@ class App(ctk.CTk):
         self.controller_frame.pack(pady=5, fill="both", expand=True)
 
         try:
-            ctrl_image = ctk.CTkImage(light_image=Image.open("controller.png"), size=(200, 200))
+            img_path = resource_path("controller.png")
+            ctrl_image = ctk.CTkImage(light_image=Image.open(img_path), size=(200, 200))
             self.lbl_controller_img = ctk.CTkLabel(self.controller_frame, text="", image=ctrl_image)
-        except Exception as e:
-            self.lbl_controller_img = ctk.CTkLabel(self.controller_frame, text="[Missing controller.png]", width=250, height=150, fg_color="#222222")
+        except Exception:
+            self.lbl_controller_img = ctk.CTkLabel(self.controller_frame, text="[No image]", width=200, height=200, fg_color="#222222")
             
         self.lbl_controller_img.pack(side="left", padx=(40, 20))
 
@@ -239,7 +247,7 @@ class App(ctk.CTk):
         # Limpiamos el nombre sin asteriscos para probar el nombre exacto
         clean_name = device_name.split(" (")[0].strip()
         
-        nircmd_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nircmd.exe")
+        nircmd_path = resource_path("nircmd.exe")
         
         if os.path.exists(nircmd_path):
             logging.info(f"Probando NirCmd con nombre exacto: {clean_name}")
@@ -247,12 +255,8 @@ class App(ctk.CTk):
             # Ejecutamos comando sin asteriscos
             cmd = [nircmd_path, "setdefaultsounddevice", clean_name, "1"]
             subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
-            
-            # Si el comando tiene espacios, a veces NirCmd necesita comillas extra
-            # Forzamos una ejecución directa tipo shell si la anterior falló
             subprocess.run(f'"{nircmd_path}" setdefaultsounddevice "{clean_name}" 1', shell=True)
             subprocess.run(f'"{nircmd_path}" setdefaultsounddevice "{clean_name}" 2', shell=True)
-            
             logging.info("Comandos de audio enviados.")
         else:
             logging.error(f"nircmd.exe no encontrado en {nircmd_path}")
@@ -265,7 +269,7 @@ class App(ctk.CTk):
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
             
-        nircmd_path = os.path.join(base_path, "nircmd.exe")
+        nircmd_path = resource_path("nircmd.exe") 
         
         if os.path.exists(nircmd_path):
             logging.info(f"Setting primary display to: {display_name}")
