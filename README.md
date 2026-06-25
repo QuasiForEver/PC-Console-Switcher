@@ -58,3 +58,4 @@ To exit, select "Exit" from the tray menu.
 
 4. Windows Startup
 Enable the "Run at Windows startup" checkbox in the Steam tab to ensure your switcher is always active and ready to handle your controller wake-up signals.
+
