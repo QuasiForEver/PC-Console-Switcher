@@ -13,6 +13,7 @@ import winreg
 import subprocess
 import pystray
 from PIL import Image
+from tkinter import messagebox
 
 def resource_path(relative_path):
     try:
@@ -82,6 +83,7 @@ class App(ctk.CTk):
         super().__init__()
         
         self.title("PC-Console Switcher")
+        self.iconbitmap(resource_path("icon.ico"))
         self.geometry("620x680")
         self.resizable(False, False)
         
@@ -244,7 +246,6 @@ class App(ctk.CTk):
     def set_default_audio(self, device_name):
         if not device_name or device_name == "Select...": return
         
-        # Limpiamos el nombre sin asteriscos para probar el nombre exacto
         clean_name = device_name.split(" (")[0].strip()
         
         nircmd_path = resource_path("nircmd.exe")
@@ -252,7 +253,6 @@ class App(ctk.CTk):
         if os.path.exists(nircmd_path):
             logging.info(f"Probando NirCmd con nombre exacto: {clean_name}")
             
-            # Ejecutamos comando sin asteriscos
             cmd = [nircmd_path, "setdefaultsounddevice", clean_name, "1"]
             subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
             subprocess.run(f'"{nircmd_path}" setdefaultsounddevice "{clean_name}" 1', shell=True)
@@ -295,7 +295,6 @@ class App(ctk.CTk):
         overlay.attributes("-topmost", True)
         overlay.configure(bg="#1e1e1e")
         
-        # Centrar en pantalla
         w, h = 600, 150
         x = (self.winfo_screenwidth() // 2) - (w // 2)
         y = (self.winfo_screenheight() // 2) - (h // 2)
@@ -304,11 +303,9 @@ class App(ctk.CTk):
         lbl = tk.Label(overlay, text=message, font=("Arial", 30, "bold"), bg="#1e1e1e", fg="#00ffcc")
         lbl.pack(expand=True)
         
-        # FORZAR RENDERIZADO
         overlay.update() 
         overlay.after(2000, overlay.destroy)
 
-    # --- EXECUTION ENGINE ---
     def trigger_mode_switch(self):
         if self.is_switching: return
         self.is_switching = True
@@ -360,15 +357,31 @@ class App(ctk.CTk):
         
         self.set_cursor_visibility(True)
         
+        try:
+            os.startfile("steam://close/bigpicture")
+        except Exception as e:
+            logging.error(f"Error cerrando Steam Big Picture: {e}")
+        
         self.current_state = "PC"
         self.is_switching = False
 
     def trigger_headphones_switch(self):
-        logging.info(">>> QUICK SWITCH: HEADPHONES AUDIO <<<")
+        if not hasattr(self, 'audio_state'):
+            self.audio_state = 'TV' 
+        
+        tv_audio = self.config_data.get("tv_audio", "")
         hp_audio = self.config_data.get("hp_audio", "")
-        self.set_default_audio(hp_audio)
+        
+        self.show_status_overlay("Switching TV/Headphones Audio...")
+        if self.audio_state == 'TV':
+            logging.info(">>> SWITCHING TO HEADPHONES <<<")
+            self.set_default_audio(hp_audio)
+            self.audio_state = 'HEADPHONES'
+        else:
+            logging.info(">>> SWITCHING TO TV AUDIO <<<")
+            self.set_default_audio(tv_audio)
+            self.audio_state = 'TV'
 
-    # --- DYNAMIC DISPLAYS METHODS ---
     def add_pc_display(self):
         if len(self.pc_display_combos) >= 4: return
         row_frame = ctk.CTkFrame(self.displays_container, fg_color="transparent")
@@ -402,7 +415,6 @@ class App(ctk.CTk):
                         widget.configure(text=f"Display {i + 1}:")
                     break
 
-    # --- ACTION METHODS ---
     def browse_steam_path(self):
         file_path = filedialog.askopenfilename(title="Select steam.exe", filetypes=[("Executable Files", "*.exe")])
         if file_path:
@@ -449,7 +461,6 @@ class App(ctk.CTk):
             for d in sd.query_devices():
                 if d['max_output_channels'] > 0:
                     clean_name = d['name'].strip()
-                    # Filtramos basura de Windows
                     if "Microsoft Sound Mapper" not in clean_name and "Primary Sound Capture Driver" not in clean_name:
                         if clean_name not in audio_devices:
                             audio_devices.append(clean_name)
@@ -474,6 +485,17 @@ class App(ctk.CTk):
     def poll_controller(self):
         try:
             selected = self.combo_controller.get()
+
+            if selected == "No controller detected" or selected == "Select...":
+                connected = XInput.get_connected()
+                for i in range(4):
+                    if connected[i]:
+                        new_ctrl = f"Controller {i + 1}"
+                        self.combo_controller.set(new_ctrl)
+                        self.on_controller_change(new_ctrl)
+                        selected = new_ctrl
+                        break
+
             if selected.startswith("Controller"):
                 idx = int(selected.split(" ")[1]) - 1
                 if XInput.get_connected()[idx]:
@@ -527,12 +549,11 @@ class App(ctk.CTk):
                                 self.trigger_mode_switch()
                                 self.after(5000, self.reset_cooldown)
                         
-                        # AQUÍ ESTÁ EL CAMBIO PARA EL TOGGLE:
                         elif current_combo == saved_audio and current_combo != "":
                             if not self.action_cooldown:
                                 self.action_cooldown = True
                                 self.trigger_headphones_switch()
-                                self.after(1000, self.reset_cooldown) # 1 seg es suficiente para el audio
+                                self.after(1000, self.reset_cooldown)
 
         except Exception:
             pass
@@ -568,19 +589,15 @@ class App(ctk.CTk):
         return {}
 
     def apply_config_to_ui(self):
-        # 1. Checkboxes
         if self.config_data.get("wake_pc", True): self.chk_power.select()
         else: self.chk_power.deselect()
         if self.config_data.get("steam_offline", False): self.chk_offline_mode.select()
         if self.config_data.get("run_startup", False): self.chk_startup.select()
 
-        # 2. Carga de Displays guardados
         saved_pc_displays = self.config_data.get("pc_displays", [])
         if saved_pc_displays:
-            # Primero eliminamos los que se crearon por defecto al iniciar
             for combo in self.pc_display_combos[:]:
                 self.remove_pc_display(combo.master, combo)
-            # Luego creamos los guardados
             for val in saved_pc_displays:
                 self.add_pc_display()
                 self.pc_display_combos[-1].set(val)
@@ -609,7 +626,9 @@ class App(ctk.CTk):
     def set_windows_startup(self, enable):
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "PCConsoleSwitcher"
-        executable_path = os.path.abspath(sys.argv[0]) 
+        
+        executable_path = os.path.abspath(sys.executable) 
+        
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
             if enable:
@@ -659,7 +678,6 @@ class App(ctk.CTk):
             self.config_data["hp_audio"] = self.combo_hp_audio.get()
             self.config_data["master_controller"] = self.combo_controller.get()
             
-            # Guardar displays y mapeos (que ya están en config_data por poll_controller)
             pc_displays = [combo.get() for combo in self.pc_display_combos if combo.get() != "Select..."]
             self.config_data["pc_displays"] = pc_displays
             
@@ -669,25 +687,31 @@ class App(ctk.CTk):
             logging.error(f"Error saving data: {e}")
             
     def on_closing(self):
-        """Minimiza a la bandeja en lugar de cerrar"""
-        self.withdraw() # Oculta la ventana
+        if not hasattr(self, 'already_warned'):
+            messagebox.showinfo("PC-Console Switcher", 
+                                "The program will continue running in the system tray to keep your shortcuts active.")
+            self.already_warned = True
+        
+        self.withdraw()
         self.create_tray_icon()
 
     def create_tray_icon(self):
-        # Intentamos cargar un icono simple si existe, sino creamos uno vacío
-        image = Image.new('RGB', (64, 64), color = (73, 109, 137))
+        try:
+            image = Image.open(resource_path("icon.ico"))
+        except Exception:
+            image = Image.new('RGB', (64, 64), color = (73, 109, 137))
         menu = pystray.Menu(
             pystray.MenuItem("Show Interface", self.show_window),
             pystray.MenuItem("Exit", self.force_exit)
         )
         self.tray_icon = pystray.Icon("PCConsoleSwitcher", image, "PC-Console Switcher", menu)
-        # Corremos el icono en un hilo separado para no congelar la UI
+        
         import threading
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def show_window(self, icon, item):
         self.tray_icon.stop()
-        self.deiconify() # Muestra la ventana de nuevo
+        self.deiconify() 
 
     def force_exit(self, icon, item):
         self.tray_icon.stop()
@@ -695,26 +719,18 @@ class App(ctk.CTk):
         self.destroy()
         sys.exit()
         
-    def trigger_headphones_switch(self):
-        # Esta variable guardará el estado actual. 'TV' por defecto al iniciar.
-        if not hasattr(self, 'audio_state'):
-            self.audio_state = 'TV' 
-        
-        tv_audio = self.config_data.get("tv_audio", "")
-        hp_audio = self.config_data.get("hp_audio", "")
-        
-        if self.audio_state == 'TV':
-            logging.info(">>> SWITCHING TO HEADPHONES <<<")
-            self.set_default_audio(hp_audio)
-            self.audio_state = 'HEADPHONES'
-        else:
-            logging.info(">>> SWITCHING TO TV AUDIO <<<")
-            self.set_default_audio(tv_audio)
-            self.audio_state = 'TV'
-        
     
 
 if __name__ == "__main__":
+    import ctypes
+    mutex_name = "Global\\PCConsoleSwitcherMutex"
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    last_error = ctypes.windll.kernel32.GetLastError()
+    
+    if last_error == 183: # 183 significa ERROR_ALREADY_EXISTS en Windows
+        logging.warning("Application already running.")
+        sys.exit(0)
+
     try:
         app = App()
         app.mainloop()
