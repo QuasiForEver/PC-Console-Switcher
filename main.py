@@ -22,9 +22,15 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # --- LOGGER CONFIGURATION ---
+log_path = os.path.join(APP_DIR, 'app_debug.log')
 logging.basicConfig(
-    filename='app_debug.log', 
+    filename=log_path, 
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -87,7 +93,7 @@ class App(ctk.CTk):
         self.geometry("620x680")
         self.resizable(False, False)
         
-        self.config_file = "config.json"
+        self.config_file = os.path.join(APP_DIR, "config.json")
         self.config_data = self.load_config()
         
         self.mapping_target = None 
