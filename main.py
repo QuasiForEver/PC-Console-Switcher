@@ -6,14 +6,15 @@ import os
 import logging
 import tkinter as tk
 import sys
+import time
 from screeninfo import get_monitors
 import sounddevice as sd
-import XInput
 import winreg
 import subprocess
 import pystray
 from PIL import Image
 from tkinter import messagebox
+from controller_backend import create_controller_backend
 
 def resource_path(relative_path):
     try:
@@ -87,6 +88,11 @@ ctk.set_default_color_theme("blue")
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
+
+        self.start_minimized = "--minimized" in sys.argv
+        if self.start_minimized:
+            # Hide before building the UI to avoid a visible flash at login.
+            self.withdraw()
         
         self.title("PC-Console Switcher")
         self.iconbitmap(resource_path("icon.ico"))
@@ -95,6 +101,14 @@ class App(ctk.CTk):
         
         self.config_file = os.path.join(APP_DIR, "config.json")
         self.config_data = self.load_config()
+        self.controller_backend = create_controller_backend(
+            APP_DIR, self.config_data.get("steam_path", "")
+        )
+        self.controller_devices = {}
+        self.controller_metadata = {}
+        self.last_controller_refresh = 0.0
+        self.last_controller_error = ""
+        self.tray_icon = None
         
         self.mapping_target = None 
         self.mapping_combo_set = set()
@@ -204,6 +218,14 @@ class App(ctk.CTk):
         self.lbl_active_controller_name = ctk.CTkLabel(tab_2, text="Active: None", font=ctk.CTkFont(weight="bold", size=12), text_color="gray")
         self.lbl_active_controller_name.pack(pady=(15, 0))
 
+        self.lbl_controller_backend = ctk.CTkLabel(
+            tab_2,
+            text=f"Input backend: {self.controller_backend.name}",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+        )
+        self.lbl_controller_backend.pack(pady=(0, 0))
+
         self.controller_frame = ctk.CTkFrame(tab_2, fg_color="transparent")
         self.controller_frame.pack(pady=5, fill="both", expand=True)
 
@@ -247,6 +269,14 @@ class App(ctk.CTk):
 
         if not self.pc_display_combos:
             self.add_pc_display()
+
+        # Repair an absent/outdated Run entry when startup was already enabled
+        # in config.json (for example after replacing main.exe).
+        if self.config_data.get("run_startup", False):
+            self.set_windows_startup(True)
+
+        if self.start_minimized:
+            self.after(0, self.hide_to_tray)
 
     # --- NIRCMD HELPERS ---
     def set_default_audio(self, device_name):
@@ -429,19 +459,37 @@ class App(ctk.CTk):
 
     def refresh_controllers(self):
         try:
-            connected = XInput.get_connected()
-            controllers = [f"Controller {i + 1}" for i in range(4) if connected[i]]
+            devices = self.controller_backend.list_devices()
+            self.last_controller_refresh = time.monotonic()
+            controller_devices = {}
+            duplicate_counts = {}
+            for device in devices:
+                duplicate_counts[device.name] = duplicate_counts.get(device.name, 0) + 1
+                suffix = duplicate_counts[device.name]
+                label = device.name if suffix == 1 else f"{device.name} ({suffix})"
+                controller_devices[label] = device.key
+
+            self.controller_devices = controller_devices
+            self.controller_metadata = {
+                label: device for label, device in zip(controller_devices, devices)
+            }
+            controllers = list(controller_devices)
             if controllers:
+                current = self.combo_controller.get()
                 self.combo_controller.configure(values=controllers)
-                if self.combo_controller.get() not in controllers:
-                    self.combo_controller.set(controllers[0])
-                    self.on_controller_change(controllers[0])
+                if current not in controllers:
+                    # Also migrates old values such as "Controller 1" to the
+                    # SDL device name on the first launch after this update.
+                    current = controllers[0]
+                    self.combo_controller.set(current)
+                self.on_controller_change(current)
             else:
+                self.controller_metadata = {}
                 self.combo_controller.configure(values=["No controller detected"])
                 self.combo_controller.set("No controller detected")
                 self.on_controller_change("No controller detected")
         except Exception as e:
-            logging.error(f"Error refreshing controllers: {e}")
+            logging.error("Error refreshing controllers: %s", e, exc_info=True)
 
     def start_mapping(self, target):
         self.mapping_target = target
@@ -481,7 +529,13 @@ class App(ctk.CTk):
 
     def on_controller_change(self, choice):
         if choice != "No controller detected" and choice != "Select...":
-            self.lbl_active_controller_name.configure(text=f"Active: {choice}", text_color="white")
+            device = self.controller_metadata.get(choice)
+            hardware_id = ""
+            if device and device.vendor_id:
+                hardware_id = f" (VID_{device.vendor_id:04X} PID_{device.product_id:04X})"
+            self.lbl_active_controller_name.configure(
+                text=f"Active: {choice}{hardware_id}", text_color="white"
+            )
         else:
             self.lbl_active_controller_name.configure(text="Active: None", text_color="gray")
 
@@ -490,80 +544,79 @@ class App(ctk.CTk):
 
     def poll_controller(self):
         try:
+            if time.monotonic() - self.last_controller_refresh >= 1.0:
+                self.refresh_controllers()
+
             selected = self.combo_controller.get()
+            device_key = self.controller_devices.get(selected)
+            if device_key:
+                pressed_buttons = self.controller_backend.get_pressed_buttons(device_key)
+                if pressed_buttons is None:
+                    self.refresh_controllers()
+                    self.after(50, self.poll_controller)
+                    return
+                self.handle_controller_input(pressed_buttons)
+            else:
+                self.lbl_tech_value.configure(text="Last Input: None")
 
-            if selected == "No controller detected" or selected == "Select...":
-                connected = XInput.get_connected()
-                for i in range(4):
-                    if connected[i]:
-                        new_ctrl = f"Controller {i + 1}"
-                        self.combo_controller.set(new_ctrl)
-                        self.on_controller_change(new_ctrl)
-                        selected = new_ctrl
-                        break
-
-            if selected.startswith("Controller"):
-                idx = int(selected.split(" ")[1]) - 1
-                if XInput.get_connected()[idx]:
-                    
-                    state = XInput.get_state(idx)
-                    buttons = XInput.get_button_values(state)
-                    pressed_buttons = [btn for btn, val in buttons.items() if val]
-                    
-                    triggers = XInput.get_trigger_values(state)
-                    if triggers[0] > 0.5: pressed_buttons.append("LT")
-                    if triggers[1] > 0.5: pressed_buttons.append("RT")
-
-                    if pressed_buttons:
-                        live_str = " + ".join(pressed_buttons)
-                        self.lbl_tech_value.configure(text=f"Last Input: {live_str}")
-                    else:
-                        self.lbl_tech_value.configure(text="Last Input: None")
-
-                    if self.mapping_target:
-                        if pressed_buttons:
-                            for p in pressed_buttons:
-                                self.mapping_combo_set.add(p)
-                            
-                            current_build = " + ".join(sorted(list(self.mapping_combo_set)))
-                            if self.mapping_target == "console":
-                                self.btn_shortcut_console.configure(text=f"Switch Console/PC Mode: [ {current_build} ]")
-                            elif self.mapping_target == "audio":
-                                self.btn_shortcut_audio.configure(text=f"Switch to Headphones: [ {current_build} ]")
-                        else:
-                            if len(self.mapping_combo_set) > 0:
-                                final_combo = " + ".join(sorted(list(self.mapping_combo_set)))
-                                self.config_data[f"shortcut_{self.mapping_target}"] = final_combo
-                                
-                                if self.mapping_target == "console":
-                                    self.btn_shortcut_console.configure(text=f"Switch Console/PC Mode: [ {final_combo} ]", fg_color="#333333")
-                                elif self.mapping_target == "audio":
-                                    self.btn_shortcut_audio.configure(text=f"Switch to Headphones: [ {final_combo} ]", fg_color="#333333")
-                                
-                                self.mapping_target = None
-                                self.mapping_combo_set.clear()
-                    
-                    elif pressed_buttons and not self.mapping_target:
-                        current_combo = " + ".join(sorted(pressed_buttons))
-                        
-                        saved_console = self.config_data.get("shortcut_console", "")
-                        saved_audio = self.config_data.get("shortcut_audio", "")
-                        
-                        if current_combo == saved_console and current_combo != "":
-                            if not self.action_cooldown:
-                                self.action_cooldown = True
-                                self.trigger_mode_switch()
-                                self.after(5000, self.reset_cooldown)
-                        
-                        elif current_combo == saved_audio and current_combo != "":
-                            if not self.action_cooldown:
-                                self.action_cooldown = True
-                                self.trigger_headphones_switch()
-                                self.after(1000, self.reset_cooldown)
-
-        except Exception:
-            pass
+            self.last_controller_error = ""
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            if error != self.last_controller_error:
+                logging.error("Controller polling failed: %s", error, exc_info=True)
+                self.last_controller_error = error
         self.after(50, self.poll_controller)
+
+    def handle_controller_input(self, pressed_buttons):
+        if pressed_buttons:
+            live_str = " + ".join(pressed_buttons)
+            self.lbl_tech_value.configure(text=f"Last Input: {live_str}")
+        else:
+            self.lbl_tech_value.configure(text="Last Input: None")
+
+        if self.mapping_target:
+            if pressed_buttons:
+                self.mapping_combo_set.update(pressed_buttons)
+                current_build = " + ".join(sorted(self.mapping_combo_set))
+                if self.mapping_target == "console":
+                    self.btn_shortcut_console.configure(
+                        text=f"Switch Console/PC Mode: [ {current_build} ]"
+                    )
+                elif self.mapping_target == "audio":
+                    self.btn_shortcut_audio.configure(
+                        text=f"Switch to Headphones: [ {current_build} ]"
+                    )
+            elif self.mapping_combo_set:
+                final_combo = " + ".join(sorted(self.mapping_combo_set))
+                self.config_data[f"shortcut_{self.mapping_target}"] = final_combo
+                if self.mapping_target == "console":
+                    self.btn_shortcut_console.configure(
+                        text=f"Switch Console/PC Mode: [ {final_combo} ]",
+                        fg_color="#333333",
+                    )
+                elif self.mapping_target == "audio":
+                    self.btn_shortcut_audio.configure(
+                        text=f"Switch to Headphones: [ {final_combo} ]",
+                        fg_color="#333333",
+                    )
+                self.mapping_target = None
+                self.mapping_combo_set.clear()
+            return
+
+        if not pressed_buttons:
+            return
+
+        current_combo = " + ".join(sorted(pressed_buttons))
+        saved_console = self.config_data.get("shortcut_console", "")
+        saved_audio = self.config_data.get("shortcut_audio", "")
+        if current_combo == saved_console and not self.action_cooldown:
+            self.action_cooldown = True
+            self.trigger_mode_switch()
+            self.after(5000, self.reset_cooldown)
+        elif current_combo == saved_audio and not self.action_cooldown:
+            self.action_cooldown = True
+            self.trigger_headphones_switch()
+            self.after(1000, self.reset_cooldown)
 
     def identify_monitors(self):
         try:
@@ -617,8 +670,17 @@ class App(ctk.CTk):
             (self.combo_controller, "master_controller")
         ]:
             val = self.config_data.get(key, "Select...")
-            combo.set(val)
-            if key == "master_controller": self.on_controller_change(val)
+            if key == "master_controller":
+                if val in self.controller_devices:
+                    combo.set(val)
+                elif self.controller_devices:
+                    # XInput slot names from older releases are not stable
+                    # identifiers. Prefer the detected SDL device.
+                    val = next(iter(self.controller_devices))
+                    combo.set(val)
+                self.on_controller_change(combo.get())
+            else:
+                combo.set(val)
 
         # 4. Steam path y Mapeos
         self.entry_steam_path.insert(0, self.config_data.get("steam_path", "C:\\Program Files (x86)\\Steam\\steam.exe"))
@@ -632,21 +694,42 @@ class App(ctk.CTk):
     def set_windows_startup(self, enable):
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "PCConsoleSwitcher"
-        
-        executable_path = os.path.abspath(sys.executable) 
-        
+
+        if getattr(sys, "frozen", False):
+            command_parts = [os.path.abspath(sys.executable), "--minimized"]
+        else:
+            python_executable = os.path.abspath(sys.executable)
+            pythonw_executable = os.path.join(
+                os.path.dirname(python_executable), "pythonw.exe"
+            )
+            if os.path.isfile(pythonw_executable):
+                python_executable = pythonw_executable
+            command_parts = [
+                python_executable,
+                os.path.abspath(__file__),
+                "--minimized",
+            ]
+        startup_command = subprocess.list2cmdline(command_parts)
+
         try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
-            if enable:
-                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{executable_path}"')
-            else:
-                try:
-                    winreg.DeleteValue(key, app_name)
-                except FileNotFoundError:
-                    pass
-            winreg.CloseKey(key)
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
+            ) as key:
+                if enable:
+                    winreg.SetValueEx(
+                        key, app_name, 0, winreg.REG_SZ, startup_command
+                    )
+                    logging.info("Windows startup enabled: %s", startup_command)
+                else:
+                    try:
+                        winreg.DeleteValue(key, app_name)
+                    except FileNotFoundError:
+                        pass
+                    logging.info("Windows startup disabled")
         except Exception as e:
-            logging.error(f"Failed to modify Windows registry for startup: {e}")
+            logging.error(
+                "Failed to modify Windows registry for startup: %s", e, exc_info=True
+            )
 
     def set_usb_wake(self, enable):
         keywords = ["Xbox", "Bluetooth", "Wireless", "Controller", "XINPUT", "Receiver"]
@@ -697,11 +780,16 @@ class App(ctk.CTk):
             messagebox.showinfo("PC-Console Switcher", 
                                 "The program will continue running in the system tray to keep your shortcuts active.")
             self.already_warned = True
-        
+
+        self.hide_to_tray()
+
+    def hide_to_tray(self):
         self.withdraw()
         self.create_tray_icon()
 
     def create_tray_icon(self):
+        if self.tray_icon is not None:
+            return
         try:
             image = Image.open(resource_path("icon.ico"))
         except Exception:
@@ -716,14 +804,26 @@ class App(ctk.CTk):
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def show_window(self, icon, item):
-        self.tray_icon.stop()
-        self.deiconify() 
+        if icon:
+            icon.stop()
+        self.tray_icon = None
+        self.after(0, self._show_window)
+
+    def _show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
     def force_exit(self, icon, item):
-        self.tray_icon.stop()
+        if icon:
+            icon.stop()
+        self.tray_icon = None
+        self.after(0, self._force_exit)
+
+    def _force_exit(self):
         self.save_all_data()
+        self.controller_backend.close()
         self.destroy()
-        sys.exit()
         
     
 
